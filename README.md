@@ -114,7 +114,7 @@ python3 scripts/debug_wado.py                       # 调试：Orthanc WADO Acce
 | W2 | epoll Reactor + 线程池，跑通 WADO-RS 下载 | curl 能下载真实 DICOM |
 | W3 | STOW / QIDO + SQLite + 复合索引 | 上传→检索→下载闭环 |
 | W4 | 对接 Orthanc + WAL/幂等重传 | 与 Orthanc 互操作通过 |
-| W5 | sendfile 零拷贝 + mmap + 内存池 + 无锁队列 | 指标达标（见指标记录表） |
+| W5 | sendfile 零拷贝 + EAGAIN 背压续传 + 无锁队列 | 指标达标（见指标记录表） |
 | W6 | Valgrind/perf 调优 + CI + README 指标 | 0 泄漏、CI 绿 |
 
 > **当前进度**：W1（解析器 keep-alive/Range/multipart）、W2（epoll ET Reactor + WADO 下载）、
