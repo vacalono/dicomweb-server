@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  # 快速路径：不依赖 DCMTK，跑通网络层 + HTTP 解析 + 存储 + 路由
+  build-test:
+    name: build & test (no DCMTK)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  # 完整路径：带 DCMTK，验证真实 DICOM 标签解析
+  build-dcmtk:
+    name: build & test (with DCMTK)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev libdcmtk-dev
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=ON
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  # 内存/未定义行为：AddressSanitizer + UndefinedBehaviorSanitizer
+  sanitizers:
+    name: build & test (ASan/UBSan)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev
+      - name: Configure
+        run: >
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DDWS_HAVE_DCMTK=OFF
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build-asan -j"$(nproc)"
+      - name: Unit tests
+        run: ctest --test-dir build-asan --output-on-failure

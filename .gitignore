@@ -1,0 +1,10 @@
+build/
+data/
+*.o
+*.a
+*.so
+*.log
+.cache/
+compile_commands.json
+.vscode/
+.idea/

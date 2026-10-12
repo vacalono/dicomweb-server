@@ -1,0 +1,54 @@
+#pragma once
+// URI 路由：把 DICOMweb 路径映射到 STOW/QIDO/WADO 处理器。
+#include "http/HttpRequest.h"
+#include "http/HttpResponse.h"
+
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace dws {
+
+class ObjectStore;
+class MetadataDao;
+
+// 处理器需要的服务上下文（由 main 注入）
+struct ApiContext {
+  ObjectStore* store = nullptr;
+  MetadataDao* dao = nullptr;
+};
+
+class Router {
+ public:
+  using Args = std::vector<std::string>;
+  using Handler = std::function<HttpResponse(const HttpRequest&, const Args&)>;
+
+  void set_context(ApiContext ctx) { ctx_ = ctx; }
+  const ApiContext& context() const { return ctx_; }
+
+  void Add(const std::string& method, const std::string& pattern, Handler h);
+  HttpResponse Dispatch(const HttpRequest& req) const;
+
+  void Get(const std::string& p, Handler h) { Add("GET", p, std::move(h)); }
+  void Post(const std::string& p, Handler h) { Add("POST", p, std::move(h)); }
+  void Delete(const std::string& p, Handler h) { Add("DELETE", p, std::move(h)); }
+
+  // 注册 DICOMweb 三组接口（STOW-RS / QIDO-RS / WADO-RS）
+  void RegisterDicomweb();
+
+ private:
+  struct Route {
+    std::string method;
+    std::vector<std::string> segs;  // ":uid" 表示通配
+    Handler handler;
+  };
+
+  HttpResponse HandleStow(const HttpRequest& req, const Args& args) const;
+  HttpResponse HandleQido(const HttpRequest& req, const Args& args) const;
+  HttpResponse HandleWado(const HttpRequest& req, const Args& args) const;
+
+  ApiContext ctx_;
+  std::vector<Route> routes_;
+};
+
+}  // namespace dws
