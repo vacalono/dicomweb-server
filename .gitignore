@@ -8,3 +8,4 @@ data/
 compile_commands.json
 .vscode/
 .idea/
+docs/bench_raw_*.txt
