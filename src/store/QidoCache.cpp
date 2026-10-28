@@ -110,26 +110,42 @@ class RedisQidoCache : public QidoCache {
   const char* backend() const override { return "redis"; }
 
  private:
+  // hiredis 的 redisContext 不是线程安全的：多个 worker 共用一个连接会直接崩
+  // （实测 200 并发下 bench 段错误）。这里给每个线程一条独立连接。
+  struct Tls {
+    redisContext* ctx = nullptr;
+    const RedisQidoCache* owner = nullptr;
+  };
+  static Tls& TlsRef() {
+    static thread_local Tls t;
+    return t;
+  }
+
   redisContext* Conn() {
-    if (ctx_) return ctx_;
+    Tls& t = TlsRef();
+    if (t.owner != this) {   // 换了缓存实例：丢掉旧连接
+      if (t.ctx) redisFree(t.ctx);
+      t.ctx = nullptr;
+      t.owner = this;
+    }
+    if (t.ctx) return t.ctx;
     struct timeval tv {1, 0};
-    ctx_ = redisConnectWithTimeout(ep_.host.c_str(), ep_.port, tv);
-    if (!ctx_ || ctx_->err) {
+    redisContext* c = redisConnectWithTimeout(ep_.host.c_str(), ep_.port, tv);
+    if (!c || c->err) {
       LOG_WARN("redis connect(%s:%d) failed: %s", ep_.host.c_str(), ep_.port,
-               ctx_ ? ctx_->errstr : "oom");
-      if (ctx_) {
-        redisFree(ctx_);
-        ctx_ = nullptr;
-      }
+               c ? c->errstr : "oom");
+      if (c) redisFree(c);
       return nullptr;
     }
-    return ctx_;
+    t.ctx = c;
+    return c;
   }
 
   void Reset() {
-    if (ctx_) {
-      redisFree(ctx_);
-      ctx_ = nullptr;
+    Tls& t = TlsRef();
+    if (t.ctx) {
+      redisFree(t.ctx);
+      t.ctx = nullptr;
     }
   }
 
@@ -160,7 +176,6 @@ class RedisQidoCache : public QidoCache {
   }
 
   Endpoint ep_;
-  redisContext* ctx_ = nullptr;   // 每线程一个（对象本身放在线程里用）
   std::atomic<long> hits_{0};
   std::atomic<long> misses_{0};
 };
