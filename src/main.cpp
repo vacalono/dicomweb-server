@@ -4,6 +4,8 @@
 #include "net/TcpServer.h"
 #include "store/IMetadataDao.h"
 #include "store/QidoCache.h"
+#include "mq/KafkaProducer.h"
+#include "mq/StowConsumer.h"
 #include "util/HealthGuard.h"
 #include "store/ObjectStore.h"
 #include "util/Logger.h"
@@ -36,6 +38,9 @@ void PrintUsage(const char* prog) {
       "  --mysql-dsn <s>  mysql dsn: host=..;port=..;user=..;password=..;db=..\n"
       "  --redis-url <u>  qido cache: redis://host:port (default: env DWS_REDIS_URL)\n"
       "  --rate-limit <n> global QPS limit for incoming requests (0 = off)\n"
+      "  --kafka-brokers <b>  kafka bootstrap servers, e.g. 127.0.0.1:9092\n"
+      "  --kafka-topic <t>    stow event topic (default dws.stow.events)\n"
+      "  --stow-async         defer metadata indexing to kafka consumer\n"
       "  --io-threads <n> sub reactors (default 0 = single reactor)\n"
       "  --workers <n>    business worker threads (default = ncpu; 0 = sync in IO thread)\n"
       "  --help\n",
@@ -52,6 +57,9 @@ int main(int argc, char** argv) {
   std::string mysql_dsn;
   std::string redis_url;
   int rate_limit = 0;
+  std::string kafka_brokers;
+  std::string kafka_topic = "dws.stow.events";
+  bool stow_async = false;
   size_t io_threads = 0;
   size_t workers = std::thread::hardware_concurrency();
   if (workers == 0) workers = 4;  // 默认按 CPU 核数启用业务线程池；--workers 0 可关为同步模式
@@ -68,6 +76,9 @@ int main(int argc, char** argv) {
     else if (a == "--mysql-dsn") mysql_dsn = next("");
     else if (a == "--redis-url") redis_url = next("");
     else if (a == "--rate-limit") rate_limit = std::atoi(next("0").c_str());
+    else if (a == "--kafka-brokers") kafka_brokers = next("");
+    else if (a == "--kafka-topic") kafka_topic = next("dws.stow.events");
+    else if (a == "--stow-async") stow_async = true;
     else if (a == "--io-threads") io_threads = static_cast<size_t>(std::atoi(next("0").c_str()));
     else if (a == "--workers") workers = static_cast<size_t>(std::atoi(next("0").c_str()));
     else if (a == "--help" || a == "-h") { PrintUsage(argv[0]); return 0; }
@@ -107,6 +118,28 @@ int main(int argc, char** argv) {
   auto cache = dws::CreateQidoCache(redis_url);
   if (cache) LOG_INFO("qido cache: %s", cache->backend());
 
+  // STOW 异步管道（可选）：Kafka 生产者 + 消费者线程
+  std::unique_ptr<dws::KafkaProducer> producer;
+  std::unique_ptr<dws::StowConsumer> consumer;
+  if (!kafka_brokers.empty()) {
+    std::string err;
+    producer = std::make_unique<dws::KafkaProducer>();
+    if (!producer->Init(kafka_brokers, kafka_topic, &err)) {
+      LOG_WARN("kafka producer init failed: %s", err.c_str());
+      producer.reset();
+    }
+    if (stow_async && producer) {
+      consumer = std::make_unique<dws::StowConsumer>();
+      if (!consumer->Init(kafka_brokers, kafka_topic, dao.get(), &err)) {
+        LOG_WARN("kafka consumer init failed: %s", err.c_str());
+        consumer.reset();
+      } else {
+        consumer->Start();
+      }
+    }
+    LOG_INFO("stow async: %s", (stow_async && consumer) ? "on" : "off");
+  }
+
   // 下游健康探测（驱动熔断）
   dws::HealthGuard health(dao.get(), cache.get());
   health.Start();
@@ -119,6 +152,7 @@ int main(int argc, char** argv) {
   ctx.cache = cache.get();
   router.set_context(ctx);
   router.set_health_guard(&health);
+  router.set_stow_async(producer.get(), consumer.get());
   router.set_rate_limit(rate_limit);
   router.RegisterDicomweb();
 

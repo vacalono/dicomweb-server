@@ -4,6 +4,8 @@
 #include "store/IMetadataDao.h"
 #include "store/MetadataDao.h"
 #include "store/QidoCache.h"
+#include "mq/KafkaProducer.h"
+#include "mq/StowConsumer.h"
 #include "util/HealthGuard.h"
 #include "util/RateLimiter.h"
 #include "store/ObjectStore.h"
@@ -44,6 +46,25 @@ std::string QidoCacheKey(const HttpRequest& req, const std::vector<std::string>&
     k += '&';
   }
   return k;
+}
+
+// STOW 事件体：k=v 行格式（消费者零 JSON 依赖）
+std::string BuildStowEvent(const std::string& sop, const std::string& series,
+                           const std::string& study, const std::string& pid,
+                           const std::string& pname, const std::string& date,
+                           const std::string& modality, const std::string& path, size_t size) {
+  std::string e;
+  e.reserve(256);
+  e += "sop_uid=" + sop + "\n";
+  e += "series_uid=" + series + "\n";
+  e += "study_uid=" + study + "\n";
+  e += "patient_id=" + pid + "\n";
+  e += "patient_name=" + pname + "\n";
+  e += "study_date=" + date + "\n";
+  e += "modality=" + modality + "\n";
+  e += "file_path=" + path + "\n";
+  e += "size=" + std::to_string(size) + "\n";
+  return e;
 }
 
 std::vector<std::string> SplitPath(const std::string& path) {
@@ -177,6 +198,15 @@ void Router::RegisterDicomweb() {
       r.body += "dicomweb_cache_up " + std::to_string(guard_->cache_up() ? 1 : 0) + "\n";
       r.body += "dicomweb_db_breaker{failures=\"" + std::to_string(guard_->db_breaker().failures()) +
                 "\",state=\"" + guard_->db_breaker().state_name() + "\"} 1\n";
+      if (consumer_) {
+        r.body += "# HELP dicomweb_stow_consumed_total instances indexed from kafka\n";
+        r.body += "# TYPE dicomweb_stow_consumed_total counter\n";
+        r.body += "dicomweb_stow_consumed_total " + std::to_string(consumer_->consumed()) + "\n";
+        r.body += "# HELP dicomweb_stow_dead_lettered_total events sent to DLQ\n";
+        r.body += "# TYPE dicomweb_stow_dead_lettered_total counter\n";
+        r.body += "dicomweb_stow_dead_lettered_total " + std::to_string(consumer_->dead_lettered()) +
+                  "\n";
+      }
       r.body += "dicomweb_cache_breaker{failures=\"" +
                 std::to_string(guard_->cache_breaker().failures()) + "\",state=\"" +
                 guard_->cache_breaker().state_name() + "\"} 1\n";
@@ -396,27 +426,45 @@ HttpResponse Router::HandleStow(const HttpRequest& req, const Args& args) const 
       continue;
     }
 
-    // 4) 幂等写元数据（三个层级）
+    // 4) 元数据入库：优先投递 Kafka（消费者幂等写库），投递失败回退同步写
     StudyRecord s;
     s.study_uid = study_uid;
     s.patient_id = patient_id;
     s.patient_name = patient_name;
     s.study_date = study_date;
     s.modality = modality;
-    ctx_.dao->UpsertStudy(s);
 
     SeriesRecord se;
     se.series_uid = series_uid;
     se.study_uid = study_uid;
     se.modality = modality;
-    ctx_.dao->UpsertSeries(se);
 
     InstanceRecord in;
     in.sop_uid = sop_uid;
     in.series_uid = series_uid;
     in.file_path = ctx_.store->PathFor(sop_uid);
     in.size_bytes = static_cast<int64_t>(blob->size());
-    ctx_.dao->UpsertInstance(in);
+
+    bool wrote = false;
+    if (producer_ && producer_->Ready()) {
+      const std::string event = BuildStowEvent(sop_uid, series_uid, study_uid, patient_id,
+                                               patient_name, study_date, modality, in.file_path,
+                                               blob->size());
+      if (producer_->Publish(sop_uid, event)) {
+        metrics_.IncAsyncProduced();
+        wrote = true;
+      } else {
+        metrics_.IncAsyncFallback();   // MQ 抖动：退回同步写，保证不丢数据
+      }
+    }
+    if (!wrote) {
+      wrote = ctx_.dao->UpsertStudy(s) && ctx_.dao->UpsertSeries(se) && ctx_.dao->UpsertInstance(in);
+    }
+    if (!wrote) {
+      if (fail++) fails << ",";
+      fails << "{\"FailureReason\":\"metadata\"}";
+      continue;
+    }
     touched_studies.insert(study_uid);
     touched_series.insert(series_uid);
 

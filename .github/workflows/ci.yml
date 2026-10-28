@@ -302,3 +302,78 @@ jobs:
             /tmp/metrics-down.txt
             /tmp/metrics-up.txt
           if-no-files-found: warn
+
+  # P3 STOW 异步化：Kafka 生产者 + 消费者入库，验证"最终一致"
+  kafka-async:
+    name: "kafka async stow (eventual indexing)"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev librdkafka-dev
+      - name: Build (Kafka ON)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF -DDWS_HAVE_KAFKA=ON
+          cmake --build build -j"$(nproc)"
+      - name: 启动 Kafka（KRaft 单节点）
+        run: |
+          docker run -d --name dws-kafka -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 \
+            -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://127.0.0.1:9092 \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@127.0.0.1:9093 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1 \
+            -e KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1 \
+            -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
+            apache/kafka:3.8.0
+          for i in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/9092) >/dev/null 2>&1; then echo "kafka port open"; break; fi
+            sleep 2
+          done
+          (echo > /dev/tcp/127.0.0.1/9092) >/dev/null 2>&1
+      - name: 异步入库（STOW → Kafka → consumer → QIDO）
+        run: |
+          ./build/dicomweb-server --port 18083 --data /tmp/dws-kafka \
+            --kafka-brokers 127.0.0.1:9092 --stow-async &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:18083/studies && break; sleep 1; done
+
+          echo "=== 1) STOW 一条实例 ==="
+          curl -s -X POST --data-binary "DICM-kafka-async-1" -H "Content-Type: application/dicom" \
+            "http://127.0.0.1:18083/studies" | tee /tmp/stow.json
+          grep -q '"ok":1' /tmp/stow.json
+
+          echo "=== 2) 等消费者入库（最多 20s）==="
+          OK=0
+          for i in $(seq 1 20); do
+            N=$(curl -s "http://127.0.0.1:18083/studies" | grep -o '"0020000D"' | wc -l)
+            if [ "$N" -gt 0 ]; then OK=1; echo "indexed after ${i}s (studies=$N)"; break; fi
+            sleep 1
+          done
+          test "$OK" = "1" || { echo "消费者没有入库（最终一致性失败）"; curl -s http://127.0.0.1:18083/metrics; exit 1; }
+
+          echo "=== 3) 指标 ==="
+          curl -s http://127.0.0.1:18083/metrics | tee /tmp/metrics-kafka.txt | grep -E "^dicomweb_stow_"
+          PRODUCED=$(grep "^dicomweb_stow_async_produced_total " /tmp/metrics-kafka.txt | awk '{print $2}')
+          CONSUMED=$(grep "^dicomweb_stow_consumed_total " /tmp/metrics-kafka.txt | awk '{print $2}')
+          test "${PRODUCED:-0}" -ge 1
+          test "${CONSUMED:-0}" -ge 1
+          kill $SERVER_PID
+      - name: Cleanup kafka
+        if: always()
+        run: docker rm -f dws-kafka || true
+      - name: Upload kafka metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kafka-async-metrics
+          path: |
+            /tmp/metrics-kafka.txt
+            /tmp/stow.json
+          if-no-files-found: warn

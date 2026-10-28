@@ -17,6 +17,8 @@ class MetadataDao;
 class IMetadataDao;
 class QidoCache;
 class HealthGuard;
+class KafkaProducer;
+class StowConsumer;
 
 // 处理器需要的服务上下文（由 main 注入）
 struct ApiContext {
@@ -39,6 +41,8 @@ class Router {
   // 限流：rps <= 0 表示关闭；突发上限取 max(1, rps/10)
   void set_rate_limit(int rps);
   void set_health_guard(HealthGuard* g) { guard_ = g; }
+  // STOW 异步化：producer 可用时才真正异步；投递失败自动回退同步写库
+  void set_stow_async(KafkaProducer* p, StowConsumer* c) { producer_ = p; consumer_ = c; }
   const Metrics& metrics() const { return metrics_; }
 
   void Get(const std::string& p, Handler h) { Add("GET", p, std::move(h)); }
@@ -66,6 +70,8 @@ class Router {
   mutable Metrics metrics_;   // 只读 handler 里也要计数
   std::unique_ptr<TokenBucket> limiter_;
   HealthGuard* guard_ = nullptr;   // 可为空：未启用健康探测
+  KafkaProducer* producer_ = nullptr;
+  StowConsumer* consumer_ = nullptr;
 };
 
 }  // namespace dws

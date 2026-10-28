@@ -17,6 +17,7 @@ option(DWS_HAVE_DCMTK    "Compile DCMTK-dependent code" ON)
 option(DWS_USE_POSTGRES  "Use PostgreSQL instead of SQLite" OFF)
 option(DWS_HAVE_MYSQL    "Compile MySQL 8 metadata backend" OFF)
 option(DWS_HAVE_REDIS    "Compile Redis QIDO cache" OFF)
+option(DWS_HAVE_KAFKA    "Compile Kafka async STOW pipeline" OFF)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -30,6 +31,8 @@ include(Dependencies)
 add_library(dws_core STATIC
   src/util/ThreadPool.cpp
   src/util/HealthGuard.cpp
+  src/mq/KafkaProducer.cpp
+  src/mq/StowConsumer.cpp
   src/util/MpscThreadPool.cpp
   src/net/Buffer.cpp
   src/net/EpollPoller.cpp
@@ -90,6 +93,19 @@ if(DWS_HAVE_REDIS)
     message(STATUS "Redis cache enabled: ${HIREDIS_LIBRARY}")
   else()
     message(FATAL_ERROR "DWS_HAVE_REDIS=ON but hiredis not found")
+  endif()
+endif()
+
+if(DWS_HAVE_KAFKA)
+  find_path(RDKAFKA_INCLUDE_DIR NAMES librdkafka/rdkafka.h rdkafka.h)
+  find_library(RDKAFKA_LIBRARY NAMES rdkafka)
+  if(RDKAFKA_INCLUDE_DIR AND RDKAFKA_LIBRARY)
+    target_compile_definitions(dws_core PUBLIC DWS_HAVE_KAFKA=1)
+    target_include_directories(dws_core PUBLIC ${RDKAFKA_INCLUDE_DIR})
+    target_link_libraries(dws_core PUBLIC ${RDKAFKA_LIBRARY})
+    message(STATUS "Kafka pipeline enabled: ${RDKAFKA_LIBRARY}")
+  else()
+    message(FATAL_ERROR "DWS_HAVE_KAFKA=ON but librdkafka not found")
   endif()
 endif()
 

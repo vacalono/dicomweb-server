@@ -18,6 +18,8 @@ class Metrics {
   void IncRateLimited() { rate_limited_.fetch_add(1, std::memory_order_relaxed); }
   void IncCacheHit() { cache_hits_.fetch_add(1, std::memory_order_relaxed); }
   void IncCacheMiss() { cache_misses_.fetch_add(1, std::memory_order_relaxed); }
+  void IncAsyncProduced() { async_produced_.fetch_add(1, std::memory_order_relaxed); }
+  void IncAsyncFallback() { async_fallback_.fetch_add(1, std::memory_order_relaxed); }
 
   void ObserveUs(uint64_t us) {
     latency_sum_us_.fetch_add(us, std::memory_order_relaxed);
@@ -32,6 +34,8 @@ class Metrics {
   uint64_t rate_limited() const { return rate_limited_.load(std::memory_order_relaxed); }
   uint64_t cache_hits() const { return cache_hits_.load(std::memory_order_relaxed); }
   uint64_t cache_misses() const { return cache_misses_.load(std::memory_order_relaxed); }
+  uint64_t async_produced() const { return async_produced_.load(std::memory_order_relaxed); }
+  uint64_t async_fallback() const { return async_fallback_.load(std::memory_order_relaxed); }
 
   // Prometheus exposition（text/plain; version=0.0.4）
   std::string RenderPrometheus() const {
@@ -51,6 +55,12 @@ class Metrics {
        << "# HELP dicomweb_qido_cache_misses_total QIDO cache misses\n"
        << "# TYPE dicomweb_qido_cache_misses_total counter\n"
        << "dicomweb_qido_cache_misses_total " << cache_misses() << "\n"
+       << "# HELP dicomweb_stow_async_produced_total STOW events published to kafka\n"
+       << "# TYPE dicomweb_stow_async_produced_total counter\n"
+       << "dicomweb_stow_async_produced_total " << async_produced() << "\n"
+       << "# HELP dicomweb_stow_async_fallback_total publish failures that fell back to sync write\n"
+       << "# TYPE dicomweb_stow_async_fallback_total counter\n"
+       << "dicomweb_stow_async_fallback_total " << async_fallback() << "\n"
        << "# HELP dicomweb_request_duration_us request latency histogram (microseconds)\n"
        << "# TYPE dicomweb_request_duration_us histogram\n";
     uint64_t cumulative = 0;
@@ -78,6 +88,8 @@ class Metrics {
   std::atomic<uint64_t> rate_limited_{0};
   std::atomic<uint64_t> cache_hits_{0};
   std::atomic<uint64_t> cache_misses_{0};
+  std::atomic<uint64_t> async_produced_{0};
+  std::atomic<uint64_t> async_fallback_{0};
   std::atomic<uint64_t> latency_sum_us_{0};
   std::atomic<uint64_t> latency_count_{0};
   std::array<std::atomic<uint64_t>, kBuckets> latency_buckets_{};
