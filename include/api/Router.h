@@ -3,6 +3,7 @@
 #include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
 #include "util/Metrics.h"
+#include "util/RateLimiter.h"
 
 #include <functional>
 #include <memory>
@@ -15,7 +16,6 @@ class ObjectStore;
 class MetadataDao;
 class IMetadataDao;
 class QidoCache;
-class TokenBucket;
 
 // 处理器需要的服务上下文（由 main 注入）
 struct ApiContext {
