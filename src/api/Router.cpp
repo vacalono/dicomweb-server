@@ -302,7 +302,8 @@ HttpResponse Router::HandleQido(const HttpRequest& req, const Args& args) const 
     }
   }
   out += ']';
-  if (cache_ok) {
+  // 空结果不做负缓存：异步模式下消费者可能还没入库，缓存空结果会让新数据"消失" 60 s
+  if (cache_ok && out != "[]") {
     ctx_.cache->Set(cache_key, out, 60);
   }
   HttpResponse resp = HttpResponse::Json(out);
