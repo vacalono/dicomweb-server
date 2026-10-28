@@ -4,12 +4,14 @@
 #include "store/IMetadataDao.h"
 #include "store/MetadataDao.h"
 #include "store/QidoCache.h"
+#include "util/RateLimiter.h"
 #include "store/ObjectStore.h"
 #include "util/Logger.h"
 
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <functional>
 #include <set>
@@ -97,7 +99,38 @@ void Router::Add(const std::string& method, const std::string& pattern, Handler 
   routes_.push_back(std::move(r));
 }
 
-HttpResponse Router::Dispatch(const HttpRequest& req) const {
+void Router::set_rate_limit(int rps) {
+  if (rps <= 0) {
+    limiter_.reset();
+    return;
+  }
+  const double burst = std::max(1.0, rps / 10.0);
+  limiter_ = std::make_unique<TokenBucket>(static_cast<double>(rps), burst);
+  LOG_INFO("rate limit: %d rps (burst %.0f)", rps, burst);
+}
+
+// 指标与限流的外壳：所有请求都经过这里
+HttpResponse Router::Dispatch(const HttpRequest& req) {
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+  metrics_.IncRequests();
+
+  HttpResponse resp;
+  if (limiter_ && !limiter_->TryAcquire()) {
+    metrics_.IncRateLimited();
+    resp = HttpResponse::Error(429, "rate limited");
+    resp.headers["retry-after"] = "1";
+  } else {
+    resp = DispatchInner(req);
+    if (resp.status >= 500) metrics_.IncErrors();
+  }
+
+  const auto us = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - t0).count();
+  metrics_.ObserveUs(static_cast<uint64_t>(us < 0 ? 0 : us));
+  return resp;
+}
+
+HttpResponse Router::DispatchInner(const HttpRequest& req) {
   auto req_segs = SplitPath(req.path);
   for (const auto& r : routes_) {
     if (r.method != req.method) continue;
@@ -122,6 +155,15 @@ HttpResponse Router::Dispatch(const HttpRequest& req) const {
 }
 
 void Router::RegisterDicomweb() {
+  // 指标端点（Prometheus 文本）：不加限流之外的鉴权，内网/本地使用
+  Get("/metrics", [this](const HttpRequest&, const Args&) {
+    HttpResponse r;
+    r.content_type = "text/plain; version=0.0.4; charset=utf-8";
+    r.kind = HttpResponse::BodyKind::kString;
+    r.body = metrics_.RenderPrometheus();
+    return r;
+  });
+
   // STOW-RS：上传
   Post("/studies", [this](const HttpRequest& q, const Args& a) { return HandleStow(q, a); });
   Post("/studies/:study", [this](const HttpRequest& q, const Args& a) { return HandleStow(q, a); });
@@ -146,10 +188,12 @@ HttpResponse Router::HandleQido(const HttpRequest& req, const Args& args) const 
   if (ctx_.cache) {
     std::string hit;
     if (ctx_.cache->Get(cache_key, &hit)) {
+      metrics_.IncCacheHit();
       HttpResponse r = HttpResponse::Json(hit);
       r.headers["x-cache"] = "HIT";
       return r;
     }
+    metrics_.IncCacheMiss();
   }
 
   QidoFilter f;

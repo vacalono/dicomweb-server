@@ -2,8 +2,10 @@
 // URI 路由：把 DICOMweb 路径映射到 STOW/QIDO/WADO 处理器。
 #include "http/HttpRequest.h"
 #include "http/HttpResponse.h"
+#include "util/Metrics.h"
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -13,6 +15,7 @@ class ObjectStore;
 class MetadataDao;
 class IMetadataDao;
 class QidoCache;
+class TokenBucket;
 
 // 处理器需要的服务上下文（由 main 注入）
 struct ApiContext {
@@ -30,7 +33,11 @@ class Router {
   const ApiContext& context() const { return ctx_; }
 
   void Add(const std::string& method, const std::string& pattern, Handler h);
-  HttpResponse Dispatch(const HttpRequest& req) const;
+  HttpResponse Dispatch(const HttpRequest& req);
+
+  // 限流：rps <= 0 表示关闭；突发上限取 max(1, rps/10)
+  void set_rate_limit(int rps);
+  const Metrics& metrics() const { return metrics_; }
 
   void Get(const std::string& p, Handler h) { Add("GET", p, std::move(h)); }
   void Post(const std::string& p, Handler h) { Add("POST", p, std::move(h)); }
@@ -46,12 +53,16 @@ class Router {
     Handler handler;
   };
 
+  HttpResponse DispatchInner(const HttpRequest& req);
+
   HttpResponse HandleStow(const HttpRequest& req, const Args& args) const;
   HttpResponse HandleQido(const HttpRequest& req, const Args& args) const;
   HttpResponse HandleWado(const HttpRequest& req, const Args& args) const;
 
   ApiContext ctx_;
   std::vector<Route> routes_;
+  Metrics metrics_;
+  std::unique_ptr<TokenBucket> limiter_;
 };
 
 }  // namespace dws

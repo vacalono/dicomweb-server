@@ -187,3 +187,48 @@ jobs:
             /tmp/bench.txt
             docs/bench_raw_*.txt
           if-no-files-found: warn
+
+  # P2 第一片：限流（429）+ /metrics 可观测
+  resilience:
+    name: "resilience (rate limit 429 + /metrics)"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev
+      - name: Build (Release, no DCMTK)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF
+          cmake --build build -j"$(nproc)"
+      - name: 限流与指标
+        run: |
+          ./build/dicomweb-server --port 18081 --data /tmp/dws-rl --rate-limit 50 &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:18081/metrics && break; sleep 1; done
+          # 并发打 300 个请求：限流 50 QPS，必然出现 429
+          seq 1 300 | xargs -P20 -I{} curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:18081/studies?limit=10" > /tmp/codes.txt
+          echo "--- status 分布 ---"; sort /tmp/codes.txt | uniq -c
+          OK=$(grep -c "^200$" /tmp/codes.txt || true)
+          LIMITED=$(grep -c "^429$" /tmp/codes.txt || true)
+          echo "200=$OK 429=$LIMITED"
+          test "$OK" -gt 0
+          test "$LIMITED" -gt 0 || { echo "限流没生效：一个 429 都没有"; exit 1; }
+          # 指标里能看到请求与限流计数
+          curl -s http://127.0.0.1:18081/metrics | tee /tmp/metrics.txt
+          grep -q "^dicomweb_requests_total " /tmp/metrics.txt
+          grep -q "^dicomweb_rate_limited_total " /tmp/metrics.txt
+          grep -q "^dicomweb_request_duration_us_bucket" /tmp/metrics.txt
+          RL=$(grep "^dicomweb_rate_limited_total " /tmp/metrics.txt | awk '{print $2}')
+          test "$RL" -gt 0 || { echo "rate_limited_total 应 > 0"; exit 1; }
+          kill $SERVER_PID
+      - name: Upload metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resilience-metrics
+          path: |
+            /tmp/metrics.txt
+            /tmp/codes.txt
+          if-no-files-found: warn

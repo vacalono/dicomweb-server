@@ -4,6 +4,7 @@ add_executable(dws_tests
   test_router.cpp
   test_dao_contract.cpp
   test_qido_cache.cpp
+  test_metrics.cpp
 )
 
 target_link_libraries(dws_tests PRIVATE dws_core GTest::gtest GTest::gtest_main)
