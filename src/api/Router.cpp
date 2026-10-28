@@ -137,8 +137,11 @@ HttpResponse Router::Dispatch(const HttpRequest& req) {
   const auto t0 = clock::now();
   metrics_.IncRequests();
 
+  // /metrics 不参与限流：过载时监控必须还能读到（否则限流会把自身观测也限死）
+  const bool is_metrics = req.path == "/metrics";
+
   HttpResponse resp;
-  if (limiter_ && !limiter_->TryAcquire()) {
+  if (!is_metrics && limiter_ && !limiter_->TryAcquire()) {
     metrics_.IncRateLimited();
     resp = HttpResponse::Error(429, "rate limited");
     resp.headers["retry-after"] = "1";

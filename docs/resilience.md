@@ -5,7 +5,7 @@
 | 组件 | 位置 | 说明 |
 |---|---|---|
 | 令牌桶限流 | `include/util/RateLimiter.h` | 全局 QPS 限制，突发上限 = max(1, rps/10)；`--rate-limit <n>` 开启，0 关闭 |
-| 限流入口 | `Router::Dispatch` | 超限直接 **429 + `Retry-After: 1`**，不进入业务逻辑（保护下游 DB/缓存） |
+| 限流入口 | `Router::Dispatch` | 超限直接 **429 + `Retry-After: 1`**，不进入业务逻辑（保护下游 DB/缓存）；**`/metrics` 不限流**（过载时监控还要能读） |
 | 指标 | `include/util/Metrics.h` | 原子计数 + 延迟直方图，无第三方依赖 |
 | 指标端点 | `GET /metrics` | Prometheus 文本格式（`text/plain; version=0.0.4`） |
 
