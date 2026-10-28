@@ -86,6 +86,21 @@ docker compose up -d          # MySQL 8 + Redis 7
 - 响应带 `X-Cache: HIT|MISS`，可直接用 curl 验证；
 - 实测（同一 CI runner，1500 条种子）：limit=100 时 QPS +53%、p99 −39%；limit=1000 时 QPS +228%、p99 −54%；命中率 99%。详见 `docs/experiments.md`。
 
+## 异步入库（Kafka，可选）
+
+`-DDWS_HAVE_KAFKA=ON` 编译后，STOW 可把元数据入库交给消费者（最终一致）：
+
+```bash
+./build/dicomweb-server --port 8080 --data ./data \
+  --kafka-brokers 127.0.0.1:9092 --stow-async
+```
+
+- 事件 key = `sop_uid`（同实例固定分区、保序）；消费者幂等 Upsert；
+- 入库失败重试 3 次（100/200/400ms）→ 进 `<topic>.dlq`；
+- **投递失败自动回退同步写库**，MQ 抖动不丢数据；
+- `/metrics` 暴露 `stow_async_produced_total` / `stow_consumed_total` / `stow_dead_lettered_total`；
+- 取舍与已知问题见 `docs/mq.md`（写后读不立刻可见、缓存可见性延迟）。
+
 ## 测试 / 压测 / 调优
 
 ```bash
