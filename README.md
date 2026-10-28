@@ -33,7 +33,7 @@ dicomweb-server/
 ├── tests/                        # GoogleTest 单测
 ├── sql/schema.sql                # 元数据库表结构与索引
 ├── scripts/                      # 测试/压测/互操作/调试脚本（见「测试 / 压测 / 调优」）
-├── docs/                         # 云端运行指南.md（从零部署）
+├── docs/                         # 指标记录表.md / 云端运行指南.md / 学习路线.md
 └── third_party/                  # 第三方依赖（DCMTK / gtest）
 ```
 
@@ -66,6 +66,25 @@ cmake --build build -j
 ./build/dicomweb-server --port 8080 --data ./data --workers 8
 # --workers 0 退化为 IO 线程同步处理（便于对照/定位）
 ```
+
+## 存储与缓存（可选后端）
+
+默认 SQLite（零依赖）；`-DDWS_HAVE_MYSQL=ON` 编译 MySQL 8 后端，`-DDWS_HAVE_REDIS=ON` 编译 QIDO 结果缓存。
+
+```bash
+# MySQL + Redis
+cmake -S . -B build -DDWS_HAVE_MYSQL=ON -DDWS_HAVE_REDIS=ON -DDWS_HAVE_DCMTK=OFF
+cmake --build build -j"$(nproc)"
+docker compose up -d          # MySQL 8 + Redis 7
+./build/dicomweb-server --port 8080 --data ./data \
+  --db-backend mysql --mysql-dsn "host=127.0.0.1;port=3306;user=dws;password=dws;db=dicomweb" \
+  --redis-url redis://127.0.0.1:6379
+```
+
+- 两个后端跑**同一套契约测试**（`DaoContract`），语义一致；
+- 缓存键 `qido:v1:{studies|series|inst}:...`，TTL 60 s，STOW 成功后按 study/series 前缀失效；
+- 响应带 `X-Cache: HIT|MISS`，可直接用 curl 验证；
+- 实测（同一 CI runner，1500 条种子）：limit=100 时 QPS +53%、p99 −39%；limit=1000 时 QPS +228%、p99 −54%；命中率 99%。详见 `docs/experiments.md`。
 
 ## 测试 / 压测 / 调优
 
