@@ -18,6 +18,7 @@ option(DWS_USE_POSTGRES  "Use PostgreSQL instead of SQLite" OFF)
 option(DWS_HAVE_MYSQL    "Compile MySQL 8 metadata backend" OFF)
 option(DWS_HAVE_REDIS    "Compile Redis QIDO cache" OFF)
 option(DWS_HAVE_KAFKA    "Compile Kafka async STOW pipeline" OFF)
+option(DWS_HAVE_GRPC     "Build gRPC metadata service + bench (P5 comparison)" OFF)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -111,6 +112,42 @@ endif()
 
 if(DWS_USE_POSTGRES)
   target_compile_definitions(dws_core PUBLIC DWS_USE_POSTGRES=1)
+endif()
+
+# ---------------------------------------------------------------- gRPC (P5 对照)
+if(DWS_HAVE_GRPC)
+  find_package(Protobuf REQUIRED)
+  find_package(gRPC CONFIG REQUIRED)
+
+  set(PROTO_FILE "${CMAKE_CURRENT_SOURCE_DIR}/proto/metadata.proto")
+  set(PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+  file(MAKE_DIRECTORY "${PROTO_GEN_DIR}")
+
+  add_custom_command(
+    OUTPUT "${PROTO_GEN_DIR}/metadata.pb.cc" "${PROTO_GEN_DIR}/metadata.pb.h"
+           "${PROTO_GEN_DIR}/metadata.grpc.pb.cc" "${PROTO_GEN_DIR}/metadata.grpc.pb.h"
+    COMMAND protobuf::protoc
+            --proto_path="${CMAKE_CURRENT_SOURCE_DIR}/proto"
+            --cpp_out="${PROTO_GEN_DIR}"
+            --grpc_out="${PROTO_GEN_DIR}"
+            --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+            "${PROTO_FILE}"
+    DEPENDS "${PROTO_FILE}"
+    COMMENT "Generating gRPC stubs (metadata.proto)")
+
+  add_library(dws_proto STATIC
+    "${PROTO_GEN_DIR}/metadata.pb.cc"
+    "${PROTO_GEN_DIR}/metadata.grpc.pb.cc")
+  target_include_directories(dws_proto PUBLIC "${PROTO_GEN_DIR}")
+  target_link_libraries(dws_proto PUBLIC gRPC::grpc++ protobuf::libprotobuf)
+
+  add_executable(metadata-grpc-server src/rpc/metadata_grpc_server.cpp)
+  target_link_libraries(metadata-grpc-server PRIVATE dws_core dws_proto)
+
+  add_executable(grpc-bench tools/grpc_bench.cpp)
+  target_link_libraries(grpc-bench PRIVATE dws_proto)
+
+  message(STATUS "gRPC metadata service enabled (protoc: $<TARGET_FILE:protobuf::protoc>)")
 endif()
 
 # ---------------------------------------------------------------- executable

@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package dws.rpc;
+
+// 只做一件事：QIDO 的 studies 查询，用来和 HTTP/JSON 做同场景对比
+message StudyFilter {
+  string patient_id = 1;
+  string study_date = 2;
+  string modality = 3;
+  int32 limit = 4;
+  int32 offset = 5;
+}
+
+message Study {
+  string study_uid = 1;
+  string patient_id = 2;
+  string patient_name = 3;
+  string study_date = 4;
+  string modality = 5;
+}
+
+message StudyList {
+  repeated Study studies = 1;
+}
+
+service Metadata {
+  rpc ListStudies(StudyFilter) returns (StudyList);
+}

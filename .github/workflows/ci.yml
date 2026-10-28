@@ -427,3 +427,47 @@ jobs:
             /tmp/metrics-docker.txt
             /tmp/stow.json
           if-no-files-found: warn
+
+  # P5 gRPC 对照：同一份数据，gRPC/Protobuf 与 HTTP/JSON 同 runner 比较
+  grpc:
+    name: "grpc vs http/json (P5)"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgrpc++-dev protobuf-compiler-grpc \
+            libprotobuf-dev protobuf-compiler wrk python3-pip
+          python3 -m pip install --quiet pydicom
+      - name: Build (gRPC ON, tests OFF)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_BUILD_TESTS=OFF \
+            -DDWS_HAVE_DCMTK=OFF -DDWS_HAVE_GRPC=ON
+          cmake --build build -j"$(nproc)"
+      - name: 同数据 + HTTP/JSON 基线 + gRPC 压测
+        run: |
+          ./build/dicomweb-server --port 8080 --data /tmp/dws-grpc &
+          HTTP_PID=$!
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8080/studies && break; sleep 1; done
+          python3 scripts/bench_prepare.py http://127.0.0.1:8080 1500
+
+          echo "=== HTTP/JSON（wrk t4 c32 10s, limit=100）==="
+          wrk -t4 -c32 -d10s --latency "http://127.0.0.1:8080/studies?limit=100" | tee /tmp/http.txt
+          kill $HTTP_PID
+
+          echo "=== gRPC/Protobuf（32 线程 × 500 次, limit=100）==="
+          ./build/metadata-grpc-server --addr 127.0.0.1:50051 --db /tmp/dws-grpc/meta.db &
+          GRPC_PID=$!
+          for i in $(seq 1 30); do (echo > /dev/tcp/127.0.0.1/50051) >/dev/null 2>&1 && break; sleep 1; done
+          ./build/grpc-bench --target 127.0.0.1:50051 --threads 32 --per-thread 500 | tee /tmp/grpc.txt
+          kill $GRPC_PID
+      - name: Upload bench outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grpc-vs-http
+          path: |
+            /tmp/http.txt
+            /tmp/grpc.txt
+          if-no-files-found: warn
