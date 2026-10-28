@@ -110,6 +110,12 @@ docker compose up -d          # MySQL 8 + Redis 7
 - `/metrics` 暴露 `stow_async_produced_total` / `stow_consumed_total` / `stow_dead_lettered_total`；
 - 取舍与已知问题见 `docs/mq.md`（写后读不立刻可见、缓存可见性延迟）。
 
+## gRPC 对照（可选 target）
+
+`-DDWS_HAVE_GRPC=ON` 会额外编译 `metadata-grpc-server` 与 `grpc-bench`（不影响主二进制）。
+
+同 runner、同 1500 条数据、`limit=100` 实测：**HTTP/JSON 13,386 req/s（p99 7.41 ms）vs gRPC 5,776 req/s（p99 12.07 ms）**——这条读路径上 gRPC 反而慢 2.3×，原因与取舍写在 `docs/rpc.md`。
+
 ## 测试 / 压测 / 调优
 
 ```bash
