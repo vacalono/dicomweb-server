@@ -61,7 +61,7 @@ class Router {
 
   ApiContext ctx_;
   std::vector<Route> routes_;
-  Metrics metrics_;
+  mutable Metrics metrics_;   // 只读 handler 里也要计数
   std::unique_ptr<TokenBucket> limiter_;
 };
 
