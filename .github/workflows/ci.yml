@@ -150,7 +150,7 @@ jobs:
           ./build/dicomweb-server --port 8080 --data /tmp/dws-bench &
           SERVER_PID=$!
           for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8080/studies && break; sleep 1; done
-          python3 scripts/bench_prepare.py http://127.0.0.1:8080 300
+          python3 scripts/bench_prepare.py http://127.0.0.1:8080 1500
           kill $SERVER_PID
       - name: Bench A（无缓存：sqlite）
         run: |
@@ -159,6 +159,8 @@ jobs:
           for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8080/studies && break; sleep 1; done
           echo "### A: sqlite, cache=off" | tee /tmp/bench.txt
           bash scripts/bench.sh http://127.0.0.1:8080 10s 200 | tee -a /tmp/bench.txt
+          echo "### A2: sqlite, cache=off, limit=1000 (big body)" | tee -a /tmp/bench.txt
+          wrk -t4 -c100 -d10s --latency "http://127.0.0.1:8080/studies?limit=1000" | tee -a /tmp/bench.txt
           kill $SERVER_PID
       - name: Bench B（sqlite + redis 缓存）
         run: |
@@ -174,6 +176,8 @@ jobs:
           echo "### B: sqlite+redis, cache=on" | tee -a /tmp/bench.txt
           echo "hit_rate: hit=$HIT miss=$MISS" | tee -a /tmp/bench.txt
           bash scripts/bench.sh http://127.0.0.1:8080 10s 200 | tee -a /tmp/bench.txt
+          echo "### B2: sqlite+redis, cache=on, limit=1000 (big body)" | tee -a /tmp/bench.txt
+          wrk -t4 -c100 -d10s --latency "http://127.0.0.1:8080/studies?limit=1000" | tee -a /tmp/bench.txt
           kill $SERVER_PID
       - name: Upload bench output
         uses: actions/upload-artifact@v4
