@@ -123,28 +123,57 @@ jobs:
           grep -qi "x-cache: MISS" /tmp/h3 || { echo "STOW should invalidate cache"; cat /tmp/h3; exit 1; }
           kill $SERVER_PID
 
-  # P0 基线：QIDO 压测（数字随 CI runner 波动，只看量级与回归）
+  # P0 基线 + P1 缓存对比：同一 runner、同一份种子数据，先无缓存再有缓存
   bench:
-    name: bench baseline (QIDO, sqlite)
+    name: "bench baseline (QIDO: sqlite vs sqlite+redis)"
     runs-on: ubuntu-24.04
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev wrk python3-pip
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev libhiredis-dev wrk python3-pip
           python3 -m pip install --quiet pydicom
-      - name: Build (Release, no DCMTK)
+      - name: Build (Release, sqlite + redis, DCMTK off)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF -DDWS_HAVE_REDIS=ON
           cmake --build build -j"$(nproc)"
-      - name: Seed + bench
+      - name: Seed once
         run: |
           ./build/dicomweb-server --port 8080 --data /tmp/dws-bench &
           SERVER_PID=$!
           for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8080/studies && break; sleep 1; done
           python3 scripts/bench_prepare.py http://127.0.0.1:8080 300
-          bash scripts/bench.sh http://127.0.0.1:8080 10s 200 | tee /tmp/bench.txt
+          kill $SERVER_PID
+      - name: Bench A（无缓存：sqlite）
+        run: |
+          ./build/dicomweb-server --port 8080 --data /tmp/dws-bench &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8080/studies && break; sleep 1; done
+          echo "### A: sqlite, cache=off" | tee /tmp/bench.txt
+          bash scripts/bench.sh http://127.0.0.1:8080 10s 200 | tee -a /tmp/bench.txt
+          kill $SERVER_PID
+      - name: Bench B（sqlite + redis 缓存）
+        run: |
+          ./build/dicomweb-server --port 8080 --data /tmp/dws-bench --redis-url redis://127.0.0.1:6379 &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8080/studies && break; sleep 1; done
+          # 命中率：同一查询连发 100 次，统计 X-Cache
+          MISS=0; HIT=0
+          for i in $(seq 1 100); do
+            CODE=$(curl -s -D - -o /dev/null "http://127.0.0.1:8080/studies?limit=100" | grep -i "^x-cache:" | tr -d "\r" | awk "{print \$2}")
+            if [ "$CODE" = "HIT" ]; then HIT=$((HIT+1)); else MISS=$((MISS+1)); fi
+          done
+          echo "### B: sqlite+redis, cache=on" | tee -a /tmp/bench.txt
+          echo "hit_rate: hit=$HIT miss=$MISS" | tee -a /tmp/bench.txt
+          bash scripts/bench.sh http://127.0.0.1:8080 10s 200 | tee -a /tmp/bench.txt
           kill $SERVER_PID
       - name: Upload bench output
         uses: actions/upload-artifact@v4
