@@ -41,9 +41,38 @@ dicomweb_request_duration_us_*     延迟直方图（1/2/5/10/25/50/100/250ms, +
 - `TokenBucket.RateIsRespectedOverTime`：50 rps / 200 ms 内放行 6–25 个（含突发）
 - `Metrics.CountersAndHistogramRender` / `BucketsAreCumulative`：计数与累计桶正确
 
+## 熔断（P2 第二片）
+
+| 组件 | 位置 | 说明 |
+|---|---|---|
+| 熔断器 | `include/util/CircuitBreaker.h` | 连续 3 次失败 → 打开；冷却 2 s → 半开放**一个**探针；成功关、失败重开 |
+| 健康探测 | `include/util/HealthGuard.h` + `src/util/HealthGuard.cpp` | 后台线程每 500 ms `Ping()` 一次 DAO 与缓存，驱动两个熔断器 |
+| 快速失败 | `Router::DispatchInner` | DB 熔断打开 → **503 + Retry-After: 2**，不碰数据库；`/metrics` 不受影响 |
+| 缓存降级 | `HandleQido` | 缓存熔断时只跳过缓存（直查库），**不**返回 503 |
+| 自愈 | `MysqlMetadataDao::Ping` | `mysql_ping` 失败后**主动重连**，否则 MySQL 恢复后连接一直坏着（这是演练里发现的坑） |
+
+指标新增：
+
+```
+dicomweb_db_up                    1/0
+dicomweb_cache_up                 1/0
+dicomweb_db_breaker{state,failures}
+dicomweb_cache_breaker{state,failures}
+```
+
+### 演练（CI `drill` job，真 docker MySQL）
+
+| 步骤 | 结果 |
+|---|---|
+| 正常态 | `GET /studies` → **200**，耗时 1.43 ms；`db_up 1` |
+| `docker stop` MySQL 后等 8 s | `GET /studies` → **503**，耗时 **0.19 ms**（快速失败，没等超时）；`db_up 0` |
+| `docker start` 并等就绪 | 约 2 s 后 → **200**；`db_up 1`，熔断回到 closed |
+
+结论：断库时**请求不再被拖住**（1.43 ms → 0.19 ms 失败返回），库回来能自动恢复，不需要重启服务。
+
 ## 还没做（P2 剩余）
 
-1. **熔断**：下游（MySQL/Redis）失败率阈值 + 半开探测；打开时 QIDO/WADO 快速失败（503）而不是等超时。
-2. **幂等重试**：STOW 的 instance UID 去重 + 重试上限 + 退避（当前依赖 `ON DUPLICATE KEY` 幂等写）。
-3. **故障演练**：kill MySQL / kill Redis / 注入 500 ms 延迟，记录"多久熔断、多久自愈"，写成 runbook。
-4. **`/metrics` 的鉴权**：目前内网裸奔，生产应放在内网端口或加 token。
+1. **幂等重试上限/退避**：STOW 现在依赖 `ON DUPLICATE KEY` 天然幂等，但没有"失败重试 N 次 + 退避"的显式策略。
+2. **Redis 断连演练**：当前只演练了 MySQL；缓存断连的降级路径有实现（跳过缓存），但没有 CI 断言。
+3. **注入延迟**（500 ms）场景：熔断目前只看"探测失败"，不感知"变慢"。
+4. **`/metrics` 鉴权**：内网裸奔，生产应放内网端口或加 token。
