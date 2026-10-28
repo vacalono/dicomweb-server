@@ -67,6 +67,15 @@ cmake --build build -j
 # --workers 0 退化为 IO 线程同步处理（便于对照/定位）
 ```
 
+## 容器化
+
+```bash
+docker build -t dws:latest .        # 多阶段构建，实测镜像 90.2 MB
+docker compose up -d --build        # 服务 + MySQL + Redis + Kafka 全栈
+```
+
+详见 `docs/deploy.md`（镜像分层、compose 健康检查、CI 容器 e2e 结果）。
+
 ## 存储与缓存（可选后端）
 
 默认 SQLite（零依赖）；`-DDWS_HAVE_MYSQL=ON` 编译 MySQL 8 后端，`-DDWS_HAVE_REDIS=ON` 编译 QIDO 结果缓存。
