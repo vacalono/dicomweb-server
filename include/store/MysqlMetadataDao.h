@@ -38,6 +38,7 @@ class MysqlMetadataDao : public IMetadataDao {
 
   bool VerifyConsistency() const override;
   const char* backend() const override { return "mysql"; }
+  bool Ping() override;
 
  private:
   void* Connect() const;        // 新建一条连接（调用方负责关闭）

@@ -232,3 +232,73 @@ jobs:
             /tmp/metrics.txt
             /tmp/codes.txt
           if-no-files-found: warn
+
+  # P2 故障演练：停掉 MySQL → 熔断打开 → 503 快速失败 → 启回 → 自愈
+  drill:
+    name: "fault drill (stop MySQL -> 503 -> recover)"
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev libmariadb-dev
+      - name: Build (MySQL backend ON)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF -DDWS_HAVE_MYSQL=ON
+          cmake --build build -j"$(nproc)"
+      - name: 启动 MySQL（容器，3307）
+        run: |
+          docker run -d --name dws-mysql -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=dicomweb -p 3307:3306 mysql:8.0
+          for i in $(seq 1 60); do
+            if docker exec dws-mysql mysqladmin ping -h127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; then echo "mysql ready"; break; fi
+            sleep 2
+          done
+          docker exec dws-mysql mysqladmin ping -h127.0.0.1 -uroot -proot --silent
+      - name: 演练：kill → 503 → 恢复
+        run: |
+          DSN="host=127.0.0.1;port=3307;user=root;password=root;db=dicomweb"
+          ./build/dicomweb-server --port 18082 --data /tmp/dws-drill --db-backend mysql --mysql-dsn "$DSN" &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:18082/studies && break; sleep 1; done
+
+          echo "=== 1) 正常态 ==="
+          curl -s -o /dev/null -w "status=%{http_code} time=%{time_total}s\n" http://127.0.0.1:18082/studies
+          curl -s http://127.0.0.1:18082/metrics | grep -E "^dicomweb_(db_up|cache_up) "
+
+          echo "=== 2) 停 MySQL ==="
+          docker stop dws-mysql
+          sleep 8
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18082/studies)
+          TIME=$(curl -s -o /dev/null -w "%{time_total}" http://127.0.0.1:18082/studies)
+          echo "down: status=$CODE time=${TIME}s"
+          test "$CODE" = "503" || { echo "熔断未打开：期望 503，实际 $CODE"; curl -s http://127.0.0.1:18082/metrics | head -20; exit 1; }
+          curl -s http://127.0.0.1:18082/metrics | tee /tmp/metrics-down.txt | grep -E "^dicomweb_(db_up|db_breaker) "
+
+          echo "=== 3) 启回 MySQL，等自愈 ==="
+          docker start dws-mysql
+          for i in $(seq 1 60); do
+            if docker exec dws-mysql mysqladmin ping -h127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18082/studies)
+            [ "$CODE" = "200" ] && break
+            sleep 1
+          done
+          echo "recovered: status=$CODE"
+          test "$CODE" = "200" || { echo "没有自愈"; curl -s http://127.0.0.1:18082/metrics | head -20; exit 1; }
+          curl -s http://127.0.0.1:18082/metrics | tee /tmp/metrics-up.txt | grep -E "^dicomweb_(db_up|db_breaker) "
+          kill $SERVER_PID
+      - name: Cleanup mysql
+        if: always()
+        run: docker rm -f dws-mysql || true
+      - name: Upload drill metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drill-metrics
+          path: |
+            /tmp/metrics-down.txt
+            /tmp/metrics-up.txt
+          if-no-files-found: warn

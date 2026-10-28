@@ -31,6 +31,9 @@ class IMetadataDao {
 
   // 诊断用：实现名（"sqlite" / "mysql"）
   virtual const char* backend() const = 0;
+
+  // 健康探测（供熔断器使用）：连不上/查询失败返回 false
+  virtual bool Ping() = 0;
 };
 
 // 工厂：backend = "sqlite" | "mysql"

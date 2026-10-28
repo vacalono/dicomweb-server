@@ -19,6 +19,7 @@ class QidoCache {
   virtual void InvalidateSeries(const std::string& series_uid) = 0;
 
   virtual void Stats(long* hits, long* misses) const = 0;
+  virtual bool Ping() = 0;   // 健康探测（熔断器用）
   virtual const char* backend() const = 0;
 };
 

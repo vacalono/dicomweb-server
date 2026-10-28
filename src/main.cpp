@@ -4,6 +4,7 @@
 #include "net/TcpServer.h"
 #include "store/IMetadataDao.h"
 #include "store/QidoCache.h"
+#include "util/HealthGuard.h"
 #include "store/ObjectStore.h"
 #include "util/Logger.h"
 
@@ -106,6 +107,10 @@ int main(int argc, char** argv) {
   auto cache = dws::CreateQidoCache(redis_url);
   if (cache) LOG_INFO("qido cache: %s", cache->backend());
 
+  // 下游健康探测（驱动熔断）
+  dws::HealthGuard health(dao.get(), cache.get());
+  health.Start();
+
   // 路由 + 上下文
   dws::Router router;
   dws::ApiContext ctx;
@@ -113,6 +118,7 @@ int main(int argc, char** argv) {
   ctx.dao = dao.get();
   ctx.cache = cache.get();
   router.set_context(ctx);
+  router.set_health_guard(&health);
   router.set_rate_limit(rate_limit);
   router.RegisterDicomweb();
 

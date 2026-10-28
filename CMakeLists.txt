@@ -29,6 +29,7 @@ include(Dependencies)
 # ---------------------------------------------------------------- core library
 add_library(dws_core STATIC
   src/util/ThreadPool.cpp
+  src/util/HealthGuard.cpp
   src/util/MpscThreadPool.cpp
   src/net/Buffer.cpp
   src/net/EpollPoller.cpp

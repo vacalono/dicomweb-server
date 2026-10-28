@@ -114,6 +114,7 @@ std::vector<InstanceRecord> MysqlMetadataDao::QueryInstances(const std::string&)
 std::vector<InstanceRecord> MysqlMetadataDao::QueryAllInstances() const { return {}; }
 std::optional<InstanceRecord> MysqlMetadataDao::FindInstance(const std::string&) const { return std::nullopt; }
 bool MysqlMetadataDao::VerifyConsistency() const { return false; }
+bool MysqlMetadataDao::Ping() { return false; }
 void* MysqlMetadataDao::Connect() const { return nullptr; }
 void* MysqlMetadataDao::WriteConn() { return nullptr; }
 void* MysqlMetadataDao::ReadConn() const { return nullptr; }
@@ -125,7 +126,7 @@ std::string MysqlMetadataDao::Escape(void*, const std::string& s) const { return
 void* MysqlMetadataDao::Connect() const {
   MYSQL* c = mysql_init(nullptr);
   if (!c) return nullptr;
-  unsigned int timeout = 5;
+  unsigned int timeout = 2;
   mysql_options(c, MYSQL_OPT_CONNECT_TIMEOUT, &timeout);
   mysql_options(c, MYSQL_SET_CHARSET_NAME, "utf8mb4");
   if (!mysql_real_connect(c, cfg_.host.c_str(), cfg_.user.c_str(), cfg_.password.c_str(),
@@ -369,6 +370,19 @@ std::optional<InstanceRecord> MysqlMetadataDao::FindInstance(const std::string& 
   }
   mysql_free_result(res);
   return out;
+}
+
+bool MysqlMetadataDao::Ping() {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (!conn_) {
+    conn_ = Connect();
+    return conn_ != nullptr;
+  }
+  if (mysql_ping(static_cast<MYSQL*>(conn_)) == 0) return true;
+  // mysql_ping 不会自动重连：断开后重连一次，MySQL 恢复后服务能自愈
+  mysql_close(static_cast<MYSQL*>(conn_));
+  conn_ = Connect();
+  return conn_ != nullptr;
 }
 
 bool MysqlMetadataDao::VerifyConsistency() const {

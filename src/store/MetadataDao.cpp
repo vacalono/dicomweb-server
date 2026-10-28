@@ -327,6 +327,20 @@ std::optional<InstanceRecord> MetadataDao::FindInstance(const std::string& sop_u
 #endif
 }
 
+bool MetadataDao::Ping() {
+#if defined(DWS_HAVE_SQLITE3)
+  sqlite3* conn = ReadConn();
+  if (!conn) return false;
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(conn, "SELECT 1", -1, &stmt, nullptr) != SQLITE_OK) return false;
+  const bool ok = sqlite3_step(stmt) == SQLITE_ROW;
+  sqlite3_finalize(stmt);
+  return ok;
+#else
+  return false;
+#endif
+}
+
 bool MetadataDao::VerifyConsistency() const {
   // 遍历所有实例元数据，核对对应对象文件是否真实存在。
   // 断电/崩溃后可能残留"有元数据无对象"或反之，据此定位需要修复的记录。

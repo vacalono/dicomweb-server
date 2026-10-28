@@ -102,6 +102,19 @@ class RedisQidoCache : public QidoCache {
     DeleteByPattern("qido:v1:inst:" + series_uid + ":*");
   }
 
+  bool Ping() override {
+    redisContext* c = Conn();
+    if (!c) return false;
+    auto* r = static_cast<redisReply*>(redisCommand(c, "PING"));
+    if (!r) {
+      Reset();
+      return false;
+    }
+    const bool ok = r->type == REDIS_REPLY_STATUS && std::string(r->str ? r->str : "") == "PONG";
+    freeReplyObject(r);
+    return ok;
+  }
+
   void Stats(long* hits, long* misses) const override {
     if (hits) *hits = hits_.load();
     if (misses) *misses = misses_.load();

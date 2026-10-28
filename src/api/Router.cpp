@@ -4,6 +4,7 @@
 #include "store/IMetadataDao.h"
 #include "store/MetadataDao.h"
 #include "store/QidoCache.h"
+#include "util/HealthGuard.h"
 #include "util/RateLimiter.h"
 #include "store/ObjectStore.h"
 #include "util/Logger.h"
@@ -131,6 +132,12 @@ HttpResponse Router::Dispatch(const HttpRequest& req) {
 }
 
 HttpResponse Router::DispatchInner(const HttpRequest& req) {
+  // 熔断打开 → 数据库相关请求快速失败（/metrics 本身不依赖 DB，放行）
+  if (guard_ && req.path != "/metrics" && !guard_->db_up()) {
+    HttpResponse r = HttpResponse::Error(503, "database unavailable (circuit open)");
+    r.headers["retry-after"] = "2";
+    return r;
+  }
   auto req_segs = SplitPath(req.path);
   for (const auto& r : routes_) {
     if (r.method != req.method) continue;
@@ -161,6 +168,19 @@ void Router::RegisterDicomweb() {
     r.content_type = "text/plain; version=0.0.4; charset=utf-8";
     r.kind = HttpResponse::BodyKind::kString;
     r.body = metrics_.RenderPrometheus();
+    if (guard_) {
+      r.body += "# HELP dicomweb_db_up metadata DB reachable (1/0)\n";
+      r.body += "# TYPE dicomweb_db_up gauge\n";
+      r.body += "dicomweb_db_up " + std::to_string(guard_->db_up() ? 1 : 0) + "\n";
+      r.body += "# HELP dicomweb_cache_up redis cache reachable (1/0)\n";
+      r.body += "# TYPE dicomweb_cache_up gauge\n";
+      r.body += "dicomweb_cache_up " + std::to_string(guard_->cache_up() ? 1 : 0) + "\n";
+      r.body += "dicomweb_db_breaker{failures=\"" + std::to_string(guard_->db_breaker().failures()) +
+                "\",state=\"" + guard_->db_breaker().state_name() + "\"} 1\n";
+      r.body += "dicomweb_cache_breaker{failures=\"" +
+                std::to_string(guard_->cache_breaker().failures()) + "\",state=\"" +
+                guard_->cache_breaker().state_name() + "\"} 1\n";
+    }
     return r;
   });
 
@@ -184,8 +204,9 @@ HttpResponse Router::HandleQido(const HttpRequest& req, const Args& args) const 
   if (!ctx_.dao) return HttpResponse::Error(500, "dao not configured");
 
   // 命中缓存则直接返回（TTL 60s，STOW 后按 study/series 前缀失效）
-  const std::string cache_key = ctx_.cache ? QidoCacheKey(req, args) : std::string();
-  if (ctx_.cache) {
+  const bool cache_ok = ctx_.cache && (!guard_ || guard_->cache_up());
+  const std::string cache_key = cache_ok ? QidoCacheKey(req, args) : std::string();
+  if (cache_ok) {
     std::string hit;
     if (ctx_.cache->Get(cache_key, &hit)) {
       metrics_.IncCacheHit();
@@ -251,11 +272,11 @@ HttpResponse Router::HandleQido(const HttpRequest& req, const Args& args) const 
     }
   }
   out += ']';
-  if (ctx_.cache) {
+  if (cache_ok) {
     ctx_.cache->Set(cache_key, out, 60);
   }
   HttpResponse resp = HttpResponse::Json(out);
-  if (ctx_.cache) resp.headers["x-cache"] = "MISS";
+  if (cache_ok) resp.headers["x-cache"] = "MISS";
   return resp;
 }
 

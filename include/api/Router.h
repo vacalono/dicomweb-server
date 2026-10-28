@@ -16,6 +16,7 @@ class ObjectStore;
 class MetadataDao;
 class IMetadataDao;
 class QidoCache;
+class HealthGuard;
 
 // 处理器需要的服务上下文（由 main 注入）
 struct ApiContext {
@@ -37,6 +38,7 @@ class Router {
 
   // 限流：rps <= 0 表示关闭；突发上限取 max(1, rps/10)
   void set_rate_limit(int rps);
+  void set_health_guard(HealthGuard* g) { guard_ = g; }
   const Metrics& metrics() const { return metrics_; }
 
   void Get(const std::string& p, Handler h) { Add("GET", p, std::move(h)); }
@@ -63,6 +65,7 @@ class Router {
   std::vector<Route> routes_;
   mutable Metrics metrics_;   // 只读 handler 里也要计数
   std::unique_ptr<TokenBucket> limiter_;
+  HealthGuard* guard_ = nullptr;   // 可为空：未启用健康探测
 };
 
 }  // namespace dws

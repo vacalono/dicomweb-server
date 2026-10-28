@@ -30,6 +30,7 @@ class MetadataDao : public IMetadataDao {
   // 幂等写入：先落对象再写元数据，崩溃后可用此校验修复
   bool VerifyConsistency() const override;
   const char* backend() const override { return "sqlite"; }
+  bool Ping() override;
 
  private:
   std::string db_path_;
