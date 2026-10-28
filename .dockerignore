@@ -1,0 +1,12 @@
+# 构建上下文瘦身：只保留源码与构建脚本
+.git
+.github
+build
+build-*
+cmake-*
+out
+data
+*.o
+*.a
+docs/bench_raw_*.txt
+third_party
