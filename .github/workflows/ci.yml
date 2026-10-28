@@ -59,3 +59,98 @@ jobs:
         run: cmake --build build-asan -j"$(nproc)"
       - name: Unit tests
         run: ctest --test-dir build-asan --output-on-failure
+
+  # MySQL 8 + Redis 7：验证双后端契约、QIDO 缓存与端到端 HIT/MISS
+  mysql-redis:
+    name: build & test (MySQL 8 + Redis 7)
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: dicomweb
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h127.0.0.1 -uroot -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    env:
+      DWS_TEST_MYSQL_DSN: "host=127.0.0.1;port=3306;user=root;password=root;db=dicomweb"
+      DWS_TEST_REDIS_URL: "redis://127.0.0.1:6379"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev libmariadb-dev libhiredis-dev
+      - name: Configure (MySQL + Redis ON)
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF
+          -DDWS_HAVE_MYSQL=ON -DDWS_HAVE_REDIS=ON
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Unit tests (含 DAO 契约 + 缓存)
+        run: ctest --test-dir build --output-on-failure
+      - name: e2e（真 MySQL + 真 Redis，验证 x-cache HIT/MISS 与 STOW 失效）
+        run: |
+          ./build/dicomweb-server --port 18080 --data /tmp/dws-e2e \
+            --db-backend mysql --mysql-dsn "$DWS_TEST_MYSQL_DSN" --redis-url "$DWS_TEST_REDIS_URL" &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null "http://127.0.0.1:18080/studies"; then break; fi
+            sleep 1
+          done
+          # 1) 先写一条实例（无 DCMTK 时 stub 从内容哈希派生 UID）
+          curl -sf -X POST --data-binary "DICM-e2e-instance-1" \
+            -H "Content-Type: application/dicom" "http://127.0.0.1:18080/studies" -o /tmp/stow.json
+          cat /tmp/stow.json
+          # 2) 第一次 QIDO：MISS
+          curl -s -D /tmp/h1 -o /dev/null "http://127.0.0.1:18080/studies"
+          grep -qi "x-cache: MISS" /tmp/h1 || { echo "first request should be MISS"; cat /tmp/h1; exit 1; }
+          # 3) 第二次 QIDO：HIT
+          curl -s -D /tmp/h2 -o /dev/null "http://127.0.0.1:18080/studies"
+          grep -qi "x-cache: HIT" /tmp/h2 || { echo "second request should be HIT"; cat /tmp/h2; exit 1; }
+          # 4) 再写一条：应失效缓存，下一次回到 MISS
+          curl -sf -X POST --data-binary "DICM-e2e-instance-2" \
+            -H "Content-Type: application/dicom" "http://127.0.0.1:18080/studies" -o /dev/null
+          curl -s -D /tmp/h3 -o /dev/null "http://127.0.0.1:18080/studies"
+          grep -qi "x-cache: MISS" /tmp/h3 || { echo "STOW should invalidate cache"; cat /tmp/h3; exit 1; }
+          kill $SERVER_PID
+
+  # P0 基线：QIDO 压测（数字随 CI runner 波动，只看量级与回归）
+  bench:
+    name: bench baseline (QIDO, sqlite)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libsqlite3-dev libgtest-dev wrk python3-pip
+          python3 -m pip install --quiet pydicom
+      - name: Build (Release, no DCMTK)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDWS_HAVE_DCMTK=OFF
+          cmake --build build -j"$(nproc)"
+      - name: Seed + bench
+        run: |
+          ./build/dicomweb-server --port 8080 --data /tmp/dws-bench &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:8080/studies && break; sleep 1; done
+          python3 scripts/bench_prepare.py http://127.0.0.1:8080 300
+          bash scripts/bench.sh http://127.0.0.1:8080 10s 200 | tee /tmp/bench.txt
+          kill $SERVER_PID
+      - name: Upload bench output
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-baseline
+          path: |
+            /tmp/bench.txt
+            docs/bench_raw_*.txt
+          if-no-files-found: warn

@@ -1,14 +1,18 @@
 #include "api/Router.h"
 
 #include "dicom/DicomFile.h"
+#include "store/IMetadataDao.h"
 #include "store/MetadataDao.h"
+#include "store/QidoCache.h"
 #include "store/ObjectStore.h"
 #include "util/Logger.h"
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -17,6 +21,27 @@
 namespace dws {
 
 namespace {
+
+// QIDO 缓存键：qido:v1:{kind}:{uid?}:{sorted query}
+std::string QidoCacheKey(const HttpRequest& req, const std::vector<std::string>& args) {
+  std::string k = "qido:v1:";
+  if (args.empty()) {
+    k += "studies:";
+  } else if (args.size() == 1) {
+    k += "series:" + args[0] + ":";
+  } else {
+    k += "inst:" + args[1] + ":";
+  }
+  std::vector<std::pair<std::string, std::string>> kv(req.query.begin(), req.query.end());
+  std::sort(kv.begin(), kv.end());
+  for (const auto& p : kv) {
+    k += p.first;
+    k += '=';
+    k += p.second;
+    k += '&';
+  }
+  return k;
+}
 
 std::vector<std::string> SplitPath(const std::string& path) {
   std::vector<std::string> segs;
@@ -116,6 +141,17 @@ void Router::RegisterDicomweb() {
 HttpResponse Router::HandleQido(const HttpRequest& req, const Args& args) const {
   if (!ctx_.dao) return HttpResponse::Error(500, "dao not configured");
 
+  // 命中缓存则直接返回（TTL 60s，STOW 后按 study/series 前缀失效）
+  const std::string cache_key = ctx_.cache ? QidoCacheKey(req, args) : std::string();
+  if (ctx_.cache) {
+    std::string hit;
+    if (ctx_.cache->Get(cache_key, &hit)) {
+      HttpResponse r = HttpResponse::Json(hit);
+      r.headers["x-cache"] = "HIT";
+      return r;
+    }
+  }
+
   QidoFilter f;
   auto get = [&req](const char* k) -> std::optional<std::string> {
     auto it = req.query.find(k);
@@ -171,7 +207,12 @@ HttpResponse Router::HandleQido(const HttpRequest& req, const Args& args) const 
     }
   }
   out += ']';
-  return HttpResponse::Json(out);
+  if (ctx_.cache) {
+    ctx_.cache->Set(cache_key, out, 60);
+  }
+  HttpResponse resp = HttpResponse::Json(out);
+  if (ctx_.cache) resp.headers["x-cache"] = "MISS";
+  return resp;
 }
 
 HttpResponse Router::HandleWado(const HttpRequest& req, const Args& args) const {
@@ -254,6 +295,7 @@ HttpResponse Router::HandleStow(const HttpRequest& req, const Args& args) const 
 
   std::ostringstream refs, fails;
   int ok = 0, fail = 0;
+  std::set<std::string> touched_studies, touched_series;
 
   for (const std::string* blob : blobs) {
     // 1) 先落临时文件（未解析出 UID 前不污染正式命名空间）
@@ -310,11 +352,19 @@ HttpResponse Router::HandleStow(const HttpRequest& req, const Args& args) const 
     in.file_path = ctx_.store->PathFor(sop_uid);
     in.size_bytes = static_cast<int64_t>(blob->size());
     ctx_.dao->UpsertInstance(in);
+    touched_studies.insert(study_uid);
+    touched_series.insert(series_uid);
 
     if (ok++) refs << ",";
     refs << "{\"ReferencedSOPClassUID\":\"1.2.840.10008.5.1.4.1.1.7\","
             "\"ReferencedSOPInstanceUID\":\""
          << JsonEscape(sop_uid) << "\"}";
+  }
+
+  // 有新实例入库：清掉相关 QIDO 缓存（studies 列表 + 该 study 的 series + 该 series 的 instances）
+  if (ctx_.cache && ok > 0) {
+    for (const auto& sid : touched_studies) ctx_.cache->InvalidateStudy(sid);
+    for (const auto& uid : touched_series) ctx_.cache->InvalidateSeries(uid);
   }
 
   std::ostringstream os;

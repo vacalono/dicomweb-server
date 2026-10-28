@@ -15,6 +15,8 @@ endif()
 option(DWS_BUILD_TESTS   "Build unit tests"          ON)
 option(DWS_HAVE_DCMTK    "Compile DCMTK-dependent code" ON)
 option(DWS_USE_POSTGRES  "Use PostgreSQL instead of SQLite" OFF)
+option(DWS_HAVE_MYSQL    "Compile MySQL 8 metadata backend" OFF)
+option(DWS_HAVE_REDIS    "Compile Redis QIDO cache" OFF)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -37,6 +39,9 @@ add_library(dws_core STATIC
   src/http/HttpParser.cpp
   src/api/Router.cpp
   src/store/MetadataDao.cpp
+  src/store/MysqlMetadataDao.cpp
+  src/store/QidoCache.cpp
+  src/store/DaoFactory.cpp
   src/store/ObjectStore.cpp
 )
 
@@ -59,6 +64,32 @@ endif()
 if(SQLite3_FOUND)
   target_compile_definitions(dws_core PUBLIC DWS_HAVE_SQLITE3=1)
   target_link_libraries(dws_core PUBLIC SQLite::SQLite3)
+endif()
+
+if(DWS_HAVE_MYSQL)
+  find_path(MYSQL_INCLUDE_DIR NAMES mysql.h PATH_SUFFIXES mysql mariadb)
+  find_library(MYSQL_LIBRARY NAMES mariadb mysqlclient mysql)
+  if(MYSQL_INCLUDE_DIR AND MYSQL_LIBRARY)
+    target_compile_definitions(dws_core PUBLIC DWS_HAVE_MYSQL=1)
+    target_include_directories(dws_core PUBLIC ${MYSQL_INCLUDE_DIR})
+    target_link_libraries(dws_core PUBLIC ${MYSQL_LIBRARY})
+    message(STATUS "MySQL backend enabled: ${MYSQL_LIBRARY}")
+  else()
+    message(FATAL_ERROR "DWS_HAVE_MYSQL=ON but mysql client library not found")
+  endif()
+endif()
+
+if(DWS_HAVE_REDIS)
+  find_path(HIREDIS_INCLUDE_DIR NAMES hiredis/hiredis.h hiredis.h)
+  find_library(HIREDIS_LIBRARY NAMES hiredis)
+  if(HIREDIS_INCLUDE_DIR AND HIREDIS_LIBRARY)
+    target_compile_definitions(dws_core PUBLIC DWS_HAVE_REDIS=1)
+    target_include_directories(dws_core PUBLIC ${HIREDIS_INCLUDE_DIR})
+    target_link_libraries(dws_core PUBLIC ${HIREDIS_LIBRARY})
+    message(STATUS "Redis cache enabled: ${HIREDIS_LIBRARY}")
+  else()
+    message(FATAL_ERROR "DWS_HAVE_REDIS=ON but hiredis not found")
+  endif()
 endif()
 
 if(DWS_USE_POSTGRES)

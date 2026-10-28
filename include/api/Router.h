@@ -11,11 +11,14 @@ namespace dws {
 
 class ObjectStore;
 class MetadataDao;
+class IMetadataDao;
+class QidoCache;
 
 // 处理器需要的服务上下文（由 main 注入）
 struct ApiContext {
   ObjectStore* store = nullptr;
-  MetadataDao* dao = nullptr;
+  IMetadataDao* dao = nullptr;
+  QidoCache* cache = nullptr;   // 可为空：未配置 Redis 时按"无缓存"运行
 };
 
 class Router {
