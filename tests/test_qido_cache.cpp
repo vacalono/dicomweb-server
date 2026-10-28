@@ -8,18 +8,19 @@
 
 namespace {
 
-std::string UrlOrSkip() {
+// 取 Redis 地址；未配置时返回 false，由调用方 GTEST_SKIP()
+bool TryRedisUrl(std::string* out) {
   const char* url = std::getenv("DWS_TEST_REDIS_URL");
-  if (!url || !*url) {
-    GTEST_SKIP() << "DWS_TEST_REDIS_URL 未设置，跳过 Redis 缓存测试";
-  }
-  return url;
+  if (!url || !*url) return false;
+  *out = url;
+  return true;
 }
 
 }  // namespace
 
 TEST(QidoCache, SetupAndHit) {
-  const std::string url = UrlOrSkip();
+  std::string url;
+  if (!TryRedisUrl(&url)) GTEST_SKIP() << "DWS_TEST_REDIS_URL 未设置，跳过 Redis 缓存测试";
   auto cache = dws::CreateQidoCache(url);
   ASSERT_NE(cache, nullptr);
   EXPECT_STREQ(cache->backend(), "redis");
@@ -34,7 +35,8 @@ TEST(QidoCache, SetupAndHit) {
 }
 
 TEST(QidoCache, InvalidateStudyClearsListAndSeries) {
-  const std::string url = UrlOrSkip();
+  std::string url;
+  if (!TryRedisUrl(&url)) GTEST_SKIP() << "DWS_TEST_REDIS_URL 未设置，跳过 Redis 缓存测试";
   auto cache = dws::CreateQidoCache(url);
 
   cache->Set("qido:v1:studies:list", "[1]", 60);
@@ -51,7 +53,8 @@ TEST(QidoCache, InvalidateStudyClearsListAndSeries) {
 }
 
 TEST(QidoCache, InvalidateSeriesScopedToThatSeries) {
-  const std::string url = UrlOrSkip();
+  std::string url;
+  if (!TryRedisUrl(&url)) GTEST_SKIP() << "DWS_TEST_REDIS_URL 未设置，跳过 Redis 缓存测试";
   auto cache = dws::CreateQidoCache(url);
 
   cache->Set("qido:v1:inst:series-A:list", "[A]", 60);
@@ -65,7 +68,8 @@ TEST(QidoCache, InvalidateSeriesScopedToThatSeries) {
 }
 
 TEST(QidoCache, StatsCountsHitsAndMisses) {
-  const std::string url = UrlOrSkip();
+  std::string url;
+  if (!TryRedisUrl(&url)) GTEST_SKIP() << "DWS_TEST_REDIS_URL 未设置，跳过 Redis 缓存测试";
   auto cache = dws::CreateQidoCache(url);
   cache->Set("qido:v1:studies:stats", "x", 60);
   std::string out;
