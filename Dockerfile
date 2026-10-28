@@ -18,7 +18,7 @@ RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libsqlite3-0 libmariadb3 libhiredis1.1.0 librdkafka1 ca-certificates \
+      libsqlite3-0 libmariadb3 libhiredis0.14 librdkafka1 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
